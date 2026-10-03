@@ -12,6 +12,31 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
+const hopByHopHeaders = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+
+function endToEndHeaders(headers) {
+  const filtered = { ...headers };
+  const connectionTokens = String(headers.connection || '')
+    .split(',')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const name of new Set([...hopByHopHeaders, ...connectionTokens])) {
+    delete filtered[name];
+  }
+  return filtered;
+}
+
 function createProxy(request = https.request) {
   return http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
@@ -32,13 +57,13 @@ function createProxy(request = https.request) {
       path: req.url,
       method: req.method,
       headers: {
-        ...req.headers,
+        ...endToEndHeaders(req.headers),
         host: 'opencode.ai',
         'x-opencode-session': req.headers['x-opencode-session'] || sessionID,
         'user-agent': req.headers['user-agent'] || 'copilot-gateway/1.0',
       },
     }, (proxyRes) => {
-      res.writeHead(proxyRes.statusCode, { ...proxyRes.headers, ...corsHeaders });
+      res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
       proxyRes.on('error', () => res.destroy());
       proxyRes.pipe(res);
     });
