@@ -2,6 +2,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
+const { spawn } = require('node:child_process');
 const { createProxy } = require('./proxy');
 
 function listen(server) {
@@ -10,6 +11,35 @@ function listen(server) {
 
 function close(server) {
   return new Promise((resolve) => server.close(resolve));
+}
+
+function launchProxy(port) {
+  const child = spawn(process.execPath, [require.resolve('./proxy')], {
+    env: { ...process.env, COPILOT_GATEWAY_PORT: String(port) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stdout: () => stdout, stderr: () => stderr }));
+  });
+  return { child, exited, stdout: () => stdout, stderr: () => stderr };
+}
+
+function waitForOutput(processHandle, text) {
+  if (processHandle.stdout().includes(text)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const onData = () => {
+      if (!processHandle.stdout().includes(text)) return;
+      processHandle.child.stdout.off('data', onData);
+      resolve();
+    };
+    processHandle.child.stdout.on('data', onData);
+    processHandle.child.once('close', () => reject(new Error(`Proxy terminated before output: ${text}`)));
+  });
 }
 
 test('補入穩定 Session、保留既有標頭並轉發串流', async () => {
@@ -145,5 +175,44 @@ test('上游連線失敗時回傳 502 JSON', async () => {
     assert.deepEqual(await response.json(), { error: 'Proxy forwarding failed' });
   } finally {
     await close(proxy);
+  }
+});
+
+test('拒絕超出範圍或非整數的連接埠設定', async () => {
+  const processHandle = launchProxy('not-a-port');
+  const result = await processHandle.exited;
+  assert.equal(result.code, 1);
+  assert.match(result.stderr(), /COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數/);
+});
+
+test('連接埠被占用時顯示可操作的錯誤', async () => {
+  const occupied = http.createServer();
+  await listen(occupied);
+  const processHandle = launchProxy(occupied.address().port);
+  try {
+    const result = await processHandle.exited;
+    assert.equal(result.code, 1);
+    assert.match(result.stderr(), /連接埠 .* 已被占用/);
+    assert.match(result.stderr(), /COPILOT_GATEWAY_PORT/);
+  } finally {
+    await close(occupied);
+  }
+});
+
+test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () => {
+  const reservation = http.createServer();
+  await listen(reservation);
+  const port = reservation.address().port;
+  await close(reservation);
+
+  const processHandle = launchProxy(port);
+  try {
+    await waitForOutput(processHandle, `健康檢查: http://127.0.0.1:${port}/healthz`);
+    assert.match(processHandle.stdout(), new RegExp(`API Base: http://127\\.0\\.0\\.1:${port}/zen/go/v1`));
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`);
+    assert.equal(response.status, 200);
+  } finally {
+    processHandle.child.kill();
+    await processHandle.exited;
   }
 });
