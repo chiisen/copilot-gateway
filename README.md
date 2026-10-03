@@ -18,4 +18,75 @@ node proxy.js
 
 驗證：`node --test`。
 
+- MacOS
+```bash!
+~/Library/Application Support/Code/User/chatLanguageModels.json
+```
+```bash!
+~/Library/Application Support/Code - Insiders/User/chatLanguageModels.json
+```
+
+- Windows 11
+```bash!
+C:\Users\chiis\AppData\Roaming\Code\User\chatLanguageModels.json
+```
+```bash!
+C:\Users\chiis\AppData\Roaming\Code - Insiders\User\chatLanguageModels.json
+```
+- VS Code Copilot Chat 連接 OpenCode Go 時缺少 x-opencode-session 請求標頭導致的 400 錯誤。
+```json!
+"url": "https://opencode.ai/zen/go/v1",
+```
+改成:
+```json!
+"url": "http://127.0.0.1:43187/zen/go/v1",
+```
+```json!
+[
+	{
+		"name": "MiniMax",
+		"vendor": "customendpoint",
+		"apiKey": "${input:chat.lm.secret.3243e186}",
+		"apiType": "responses",
+		"models": [
+			{
+				"id": "minimax-m3",
+				"name": "MiniMax-M3",
+				"url": "https://api.minimax.io/v1",
+				"toolCalling": true,
+				"vision": true,
+				"maxInputTokens": 128000,
+				"maxOutputTokens": 16000
+			}
+		]
+	},
+	{
+		"name": "OpenCode",
+		"vendor": "customendpoint",
+		"apiKey": "${input:chat.lm.secret.14c81c73}",
+		"apiType": "responses",
+		"models": [
+			{
+				"id": "deepseek-v4.1-flash",
+				"name": "DeepSeek-V4.1-Flash",
+				"url": "http://127.0.0.1:43187/zen/go/v1",
+				"toolCalling": true,
+				"vision": true,
+				"maxInputTokens": 128000,
+				"maxOutputTokens": 16000
+			},
+			{
+				"id": "gpt-6-luna",
+                "name": "GPT-6-Luna",
+                "url": "http://127.0.0.1:43187/zen/go/v1",
+				"toolCalling": true,
+				"vision": true,
+				"maxInputTokens": 128000,
+				"maxOutputTokens": 16000
+			}
+		]
+	}
+]
+```
+
 官方要求：https://opencode.ai/docs/go/#where-can-i-use-it
