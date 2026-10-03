@@ -1,0 +1,20 @@
+# Node.js 套件與測試產物
+node_modules/
+coverage/
+.nyc_output/
+
+# 本機環境設定與金鑰
+.env
+.env.*
+!.env.example
+
+# 執行日誌
+*.log
+
+# 作業系統暫存
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# AI Agent 本機任務狀態
+.agent_task_state.md
