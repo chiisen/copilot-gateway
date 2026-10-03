@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
+const { PassThrough } = require('node:stream');
 const { createProxy } = require('./proxy');
 
 function listen(server) {
@@ -214,5 +215,85 @@ test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () 
   } finally {
     processHandle.child.kill();
     await processHandle.exited;
+  }
+});
+
+test('客戶端中止上傳時取消上游請求', async () => {
+  let resolveUpstreamAborted;
+  const upstreamAborted = new Promise((resolve) => { resolveUpstreamAborted = resolve; });
+  let resolveUpstreamReceivedBody;
+  const upstreamReceivedBody = new Promise((resolve) => { resolveUpstreamReceivedBody = resolve; });
+  const upstream = http.createServer((req) => {
+    req.once('data', () => resolveUpstreamReceivedBody());
+    req.once('aborted', resolveUpstreamAborted);
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback));
+  await listen(proxy);
+  const clientRequest = http.request({
+    hostname: '127.0.0.1',
+    port: proxy.address().port,
+    method: 'POST',
+    headers: { 'Content-Length': '100' },
+  });
+  clientRequest.on('error', () => {});
+  try {
+    clientRequest.write('partial');
+    await upstreamReceivedBody;
+    clientRequest.destroy();
+    await Promise.race([
+      upstreamAborted,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('上游請求未被取消')), 1000)),
+    ]);
+  } finally {
+    clientRequest.destroy();
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
+test('上游送出標頭後斷線時關閉下游串流', async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Length': '100', 'Content-Type': 'text/plain' });
+    res.write('partial');
+    setTimeout(() => res.socket.destroy(), 20);
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback));
+  await listen(proxy);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.address().port}/test`, { method: 'POST', body: 'payload' });
+    assert.equal(response.status, 200);
+    await assert.rejects(response.text());
+  } finally {
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
+test('下游已收到上游標頭後代理請求出錯時直接關閉回應', async () => {
+  const proxy = createProxy((options, callback) => {
+    const proxyRequest = new PassThrough();
+    setImmediate(() => {
+      const proxyResponse = new PassThrough();
+      proxyResponse.statusCode = 200;
+      proxyResponse.headers = { 'Content-Type': 'text/plain' };
+      callback(proxyResponse);
+      proxyResponse.write('partial');
+      setTimeout(() => proxyRequest.emit('error', new Error('simulated late upstream error')), 20);
+    });
+    return proxyRequest;
+  });
+  await listen(proxy);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.address().port}/test`, {
+      method: 'POST', body: 'payload',
+    });
+    assert.equal(response.status, 200);
+    await assert.rejects(response.text());
+  } finally {
+    await close(proxy);
   }
 });
