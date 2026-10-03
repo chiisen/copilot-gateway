@@ -76,6 +76,6 @@ COPILOT_GATEWAY_PORT=43188 node proxy.js
 
 VS Code 官方支援 API 類型：`chat-completions`、`responses`、`messages`。請選擇同時受模型與上游端點支援的類型。
 
-驗證：`node --test`。
+執行測試：`node --test`。Node.js 18.15 或更新版本可產生覆蓋率報告：`node --test --experimental-test-coverage`。
 
 官方要求：https://opencode.ai/docs/go/#where-can-i-use-it
