@@ -8,7 +8,6 @@ const DEFAULT_PORT = 43187;
 const sessionID = 'vscode-copilot-' + randomUUID();
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 };
 
@@ -46,7 +45,11 @@ function createProxy(request = https.request) {
     }
 
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, corsHeaders);
+      res.writeHead(204, {
+        ...corsHeaders,
+        'Access-Control-Allow-Headers': req.headers['access-control-request-headers'] || 'Authorization, Content-Type',
+        Vary: 'Origin, Access-Control-Request-Headers, Access-Control-Request-Method',
+      });
       res.end();
       return;
     }
