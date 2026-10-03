@@ -15,6 +15,20 @@ node proxy.js
 若客戶端未提供 `x-opencode-session`，代理使用本次啟動產生的固定 UUID；重啟後會更新。
 這是暫時 workaround：不同對話共用備援 ID，並非官方要求的每段對話獨立 ID。客戶端已有該標頭時會保留。
 服務僅監聽 `127.0.0.1:43187`；在執行終端按 `Ctrl+C` 可停止。
+可用 `COPILOT_GATEWAY_PORT` 環境變數更換連接埠。PowerShell 範例：
+
+```powershell
+$env:COPILOT_GATEWAY_PORT = '43188'
+node proxy.js
+```
+
+macOS / Linux 範例：
+
+```sh
+COPILOT_GATEWAY_PORT=43188 node proxy.js
+```
+
+啟動後可開啟 `http://127.0.0.1:43187/healthz` 確認代理正在執行；若更換連接埠，請相應更新網址。
 
 ## VS Code Copilot Chat 設定
 

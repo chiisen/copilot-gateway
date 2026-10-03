@@ -4,6 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const { randomUUID } = require('node:crypto');
 
+const DEFAULT_PORT = 43187;
 const sessionID = 'vscode-copilot-' + randomUUID();
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -13,6 +14,12 @@ const corsHeaders = {
 
 function createProxy(request = https.request) {
   return http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/healthz') {
+      res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok' }));
+      return;
+    }
+
     if (req.method === 'OPTIONS') {
       res.writeHead(204, corsHeaders);
       res.end();
@@ -56,15 +63,27 @@ function createProxy(request = https.request) {
 }
 
 if (require.main === module) {
-  const server = createProxy();
-  server.on('error', (err) => {
-    console.error('[啟動失敗]:', err.message);
+  const configuredPort = process.env.COPILOT_GATEWAY_PORT || DEFAULT_PORT;
+  const port = Number(configuredPort);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error('[設定錯誤] COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數。');
     process.exitCode = 1;
-  });
-  server.listen(43187, '127.0.0.1', () => {
-    console.log(`[Proxy] 本次啟動的備援 Session ID: ${sessionID}`);
-    console.log('API Base: http://127.0.0.1:43187/zen/go/v1');
-  });
+  } else {
+    const server = createProxy();
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`[啟動失敗] 連接埠 ${port} 已被占用。請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`);
+      } else {
+        console.error('[啟動失敗]:', err.message);
+      }
+      process.exitCode = 1;
+    });
+    server.listen(port, '127.0.0.1', () => {
+      console.log(`[Proxy] 本次啟動的備援 Session ID: ${sessionID}`);
+      console.log(`API Base: http://127.0.0.1:${port}/zen/go/v1`);
+      console.log(`健康檢查: http://127.0.0.1:${port}/healthz`);
+    });
+  }
 }
 
 module.exports = { createProxy };
