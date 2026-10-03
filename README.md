@@ -3,9 +3,9 @@
 
 ## 使用方式
 
-在本資料夾執行（不需安裝套件）：
+需要安裝 Node.js 18 或更新版本。在本資料夾執行（不需安裝 npm 套件）：
 
-```powershell
+```sh
 node proxy.js
 ```
 
@@ -16,77 +16,52 @@ node proxy.js
 這是暫時 workaround：不同對話共用備援 ID，並非官方要求的每段對話獨立 ID。客戶端已有該標頭時會保留。
 服務僅監聽 `127.0.0.1:43187`；在執行終端按 `Ctrl+C` 可停止。
 
-驗證：`node --test`。
+## VS Code Copilot Chat 設定
 
-- MacOS
-```bash!
-~/Library/Application Support/Code/User/chatLanguageModels.json
-```
-```bash!
-~/Library/Application Support/Code - Insiders/User/chatLanguageModels.json
-```
+在 VS Code 執行「Chat: Manage Language Models」，新增 Custom Endpoint。VS Code 會開啟 `chatLanguageModels.json`：
 
-- Windows 11
-```bash!
-C:\Users\chiis\AppData\Roaming\Code\User\chatLanguageModels.json
-```
-```bash!
-C:\Users\chiis\AppData\Roaming\Code - Insiders\User\chatLanguageModels.json
-```
-- VS Code Copilot Chat 連接 OpenCode Go 時缺少 x-opencode-session 請求標頭導致的 400 錯誤。
-```json!
-"url": "https://opencode.ai/zen/go/v1",
-```
-改成:
-```json!
-"url": "http://127.0.0.1:43187/zen/go/v1",
-```
-```json!
+- Windows：`%APPDATA%\Code\User\chatLanguageModels.json`
+- Windows Insiders：`%APPDATA%\Code - Insiders\User\chatLanguageModels.json`
+- macOS：`~/Library/Application Support/Code/User/chatLanguageModels.json`
+- macOS Insiders：`~/Library/Application Support/Code - Insiders/User/chatLanguageModels.json`
+
+將 OpenCode Go 模型的 `url` 設為本機代理位址，並使用 `chat-completions` API 類型。`chatLanguageModels.json` 的格式範例如下：
+
+```json
 [
-	{
-		"name": "MiniMax",
-		"vendor": "customendpoint",
-		"apiKey": "${input:chat.lm.secret.3243e186}",
-		"apiType": "responses",
-		"models": [
-			{
-				"id": "minimax-m3",
-				"name": "MiniMax-M3",
-				"url": "https://api.minimax.io/v1",
-				"toolCalling": true,
-				"vision": true,
-				"maxInputTokens": 128000,
-				"maxOutputTokens": 16000
-			}
-		]
-	},
-	{
-		"name": "OpenCode",
-		"vendor": "customendpoint",
-		"apiKey": "${input:chat.lm.secret.14c81c73}",
-		"apiType": "responses",
-		"models": [
-			{
-				"id": "deepseek-v4.1-flash",
-				"name": "DeepSeek-V4.1-Flash",
-				"url": "http://127.0.0.1:43187/zen/go/v1",
-				"toolCalling": true,
-				"vision": true,
-				"maxInputTokens": 128000,
-				"maxOutputTokens": 16000
-			},
-			{
-				"id": "gpt-6-luna",
-                "name": "GPT-6-Luna",
-                "url": "http://127.0.0.1:43187/zen/go/v1",
-				"toolCalling": true,
-				"vision": true,
-				"maxInputTokens": 128000,
-				"maxOutputTokens": 16000
-			}
-		]
-	}
+  {
+    "name": "OpenCode Go",
+    "vendor": "customendpoint",
+    "apiKey": "${input:openCodeGoApiKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "deepseek-v4.1-flash",
+        "name": "DeepSeek V4.1 Flash",
+        "url": "http://127.0.0.1:43187/zen/go/v1",
+        "toolCalling": true,
+        "vision": true,
+        "maxInputTokens": 128000,
+        "maxOutputTokens": 16000
+      },
+      {
+        "id": "gpt-6-luna",
+        "name": "GPT-6 Luna",
+        "url": "http://127.0.0.1:43187/zen/go/v1",
+        "toolCalling": true,
+        "vision": true,
+        "maxInputTokens": 128000,
+        "maxOutputTokens": 16000
+      }
+    ]
+  }
 ]
 ```
+
+第一次使用時，VS Code 會提示輸入並安全保存 API Key。模型清單與能力可能變動，請以 OpenCode Go 官方文件為準。
+
+VS Code 官方支援 API 類型：`chat-completions`、`responses`、`messages`。請選擇同時受模型與上游端點支援的類型。
+
+驗證：`node --test`。
 
 官方要求：https://opencode.ai/docs/go/#where-can-i-use-it
