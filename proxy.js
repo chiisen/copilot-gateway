@@ -2,8 +2,9 @@
 
 const http = require('node:http');
 const https = require('node:https');
-const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { lookupPortListener } = require('./port-lookup');
+const { createLiveStatus, failureScreen, startScreen } = require('./screen');
 
 const DEFAULT_PORT = 43187;
 const DEFAULT_HEADER_TIMEOUT_MS = 60_000;
@@ -38,140 +39,7 @@ function endToEndHeaders(headers) {
   return filtered;
 }
 
-function parseLsofFields(output) {
-  let current = null;
-  for (const line of String(output).split('\n')) {
-    if (!line) continue;
-    const kind = line[0];
-    const value = line.slice(1);
-    if (kind === 'p') current = { pid: value, command: '' };
-    else if (kind === 'c' && current && !current.command) current.command = value;
-    if (current && current.command && /^\d+$/.test(current.pid)) return current;
-  }
-  return null;
-}
-
-function parseWindowsListener(output) {
-  const line = String(output).trim().split('\n').find((item) => item.trim());
-  if (!line) return null;
-  const match = line.trim().match(/^(.*) (\d+)$/);
-  if (!match || !match[1]) return null;
-  return { command: match[1], pid: match[2] };
-}
-
-function lookupPortListener(port, execFile = execFileSync, platform = process.platform) {
-  if (!Number.isInteger(port)) return null;
-  try {
-    if (platform === 'win32') {
-      const script = [
-        `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
-        'if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if ($p) { Write-Output ($p.ProcessName + \' \' + $c.OwningProcess) } }',
-      ].join('; ');
-      return parseWindowsListener(execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        encoding: 'utf8',
-        timeout: 2000,
-        windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }));
-    }
-    return parseLsofFields(execFile('lsof', ['-nP', '-Fpc', `-iTCP:${port}`, '-sTCP:LISTEN'], {
-      encoding: 'utf8',
-      timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }));
-  } catch {
-    return null;
-  }
-}
-
-function displayWidth(text) {
-  let width = 0;
-  for (const char of text) width += char.codePointAt(0) > 0xff ? 2 : 1;
-  return width;
-}
-
-function screen(title, rows, color) {
-  const paint = (code, text) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
-  const labelWidth = Math.max(...rows.map(([label]) => displayWidth(label)));
-  const body = rows.map(([label, value]) => {
-    const gap = ' '.repeat(labelWidth - displayWidth(label));
-    return `  ${paint('2', label)}${gap}  ${value}`;
-  });
-  return [paint('1', title), ...body].join('\n');
-}
-
-function startScreen(port, sessionID, color = process.stdout.isTTY && !process.env.NO_COLOR) {
-  return screen('copilot-gateway', [
-    ['API Base', `http://127.0.0.1:${port}/zen/go/v1`],
-    ['健康檢查', `http://127.0.0.1:${port}/healthz`],
-    ['Session', sessionID],
-    ['停止', 'Ctrl+C'],
-  ], color);
-}
-
-function failureScreen(rows) {
-  return screen('copilot-gateway', rows, process.stderr.isTTY && !process.env.NO_COLOR);
-}
-
-function createLiveStatus({
-  write = (text) => process.stdout.write(text),
-  color = false,
-  intervalMs = 120,
-  clock = () => new Date().toLocaleTimeString('zh-TW', { hour12: false }),
-} = {}) {
-  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const paint = (code, text) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
-  let frame = 0;
-  let fault = null;
-  let timer = null;
-  let forwarded = 0;
-  let lastStatus = null;
-
-  function render() {
-    const time = clock();
-    const tone = fault ? '33' : '32';
-    const statusTone = lastStatus >= 500 ? '31' : '32';
-    const activity = lastStatus === null
-      ? '轉送 0'
-      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}`;
-    const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${activity}  ${paint('2', time)}`;
-    frame += 1;
-    const detail = fault
-      ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
-      : `${paint('32', '最近異常')}  ${paint('32', '無')}`;
-    write(`\x1b[2A\x1b[2K${running}\n\x1b[2K${detail}\n`);
-  }
-
-  return {
-    start() {
-      write('\n\n');
-      render();
-      if (intervalMs > 0) {
-        timer = setInterval(render, intervalMs);
-        if (typeof timer.unref === 'function') timer.unref();
-      }
-    },
-    record(statusCode) {
-      forwarded += 1;
-      lastStatus = statusCode;
-      if (statusCode < 500) fault = null;
-      render();
-    },
-    fault(err) {
-      fault = {
-        message: String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 120),
-        time: clock(),
-      };
-      render();
-    },
-    stop() {
-      if (timer) clearInterval(timer);
-      timer = null;
-    },
-  };
-}
-
-function portInUseMessage(port, execFile = execFileSync, platform = process.platform) {
+function portInUseMessage(port, execFile, platform) {
   const listener = lookupPortListener(port, execFile, platform);
   const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
   return failureScreen([
