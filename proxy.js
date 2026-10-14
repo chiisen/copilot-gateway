@@ -37,12 +37,17 @@ function endToEndHeaders(headers) {
   return filtered;
 }
 
-function parseTableListener(output) {
-  const row = String(output).trim().split('\n').find((line) => line && !line.startsWith('COMMAND'));
-  if (!row) return null;
-  const [command, pid] = row.trim().split(/\s+/);
-  if (!command || !/^\d+$/.test(pid)) return null;
-  return { command, pid };
+function parseLsofFields(output) {
+  let current = null;
+  for (const line of String(output).split('\n')) {
+    if (!line) continue;
+    const kind = line[0];
+    const value = line.slice(1);
+    if (kind === 'p') current = { pid: value, command: '' };
+    else if (kind === 'c' && current && !current.command) current.command = value;
+    if (current && current.command && /^\d+$/.test(current.pid)) return current;
+  }
+  return null;
 }
 
 function parseWindowsListener(output) {
@@ -68,8 +73,9 @@ function lookupPortListener(port, execFile = execFileSync, platform = process.pl
         stdio: ['ignore', 'pipe', 'ignore'],
       }));
     }
-    return parseTableListener(execFile('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+    return parseLsofFields(execFile('lsof', ['-nP', '-Fpc', `-iTCP:${port}`, '-sTCP:LISTEN'], {
       encoding: 'utf8',
+      timeout: 2000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }));
   } catch {

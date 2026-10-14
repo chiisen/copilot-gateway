@@ -209,6 +209,32 @@ test('Windows 連接埠占用時解析程序名稱與 pid', () => {
   assert.equal(fallback.includes('占用程序'), false);
 });
 
+test('lsof 欄位輸出保留完整程序名稱並在逾時時退回一般提示', () => {
+  const calls = [];
+  const execFile = (command, args, options) => {
+    calls.push({ command, args, options });
+    return 'p4242\nccom.docker.backend\n';
+  };
+  assert.deepEqual(lookupPortListener(43187, execFile, 'darwin'), {
+    command: 'com.docker.backend',
+    pid: '4242',
+  });
+  assert.deepEqual(calls[0].args.slice(0, 2), ['-nP', '-Fpc']);
+  assert.equal(calls[0].options.timeout, 2000);
+  assert.match(portInUseMessage(43187, execFile, 'darwin'), /占用程序：com\.docker\.backend（pid 4242）/);
+
+  const timedOut = portInUseMessage(43187, () => {
+    const error = new Error('spawn lsof ETIMEDOUT');
+    error.killed = true;
+    throw error;
+  }, 'linux');
+  assert.match(timedOut, /連接埠 43187 已被占用/);
+  assert.match(timedOut, /COPILOT_GATEWAY_PORT/);
+  assert.equal(timedOut.includes('占用程序'), false);
+
+  assert.equal(lookupPortListener(43187, () => 'pabc\ncnode\n', 'linux'), null);
+});
+
 test('連接埠被占用時顯示可操作的錯誤', async () => {
   const occupied = http.createServer();
   await listen(occupied);
