@@ -10,7 +10,7 @@ node proxy.js
 ```
 
 將 Copilot Chat 的自訂 API Base 設為 `http://127.0.0.1:43187/zen/go/v1`，並使用自己的 OpenCode Go API Key。
-代理原樣轉發路徑、Body 與授權標頭至 `https://opencode.ai`，支援串流回應。
+代理原樣轉發路徑、Body 與授權標頭至 `https://opencode.ai`，支援串流回應。上游若在 60 秒內沒有送出回應標頭，代理會關閉該請求並回傳 502；標頭送出後的串流不再受這個逾時限制。
 
 若客戶端未提供 `x-opencode-session`，代理使用本次啟動產生的固定 UUID；重啟後會更新。
 這是暫時 workaround：不同對話共用備援 ID，並非官方要求的每段對話獨立 ID。客戶端已有該標頭時會保留。

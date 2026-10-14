@@ -158,6 +158,50 @@ test('逐跳標頭及 Connection 指定標頭不會跨越代理轉送', async ()
   }
 });
 
+test('上游在標頭逾時前未回應時回傳 502', async () => {
+  let destroyed = false;
+  const upstream = http.createServer((req) => {
+    req.on('close', () => { destroyed = true; });
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback), { headerTimeoutMs: 50 });
+  await listen(proxy);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.address().port}/test`, {
+      method: 'POST', body: 'payload',
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'Proxy forwarding failed' });
+    assert.equal(destroyed, true);
+  } finally {
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
+test('收到上游標頭後的串流不受標頭逾時限制', async () => {
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.flushHeaders();
+    setTimeout(() => res.end('late'), 120);
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback), { headerTimeoutMs: 40 });
+  await listen(proxy);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.address().port}/test`, {
+      method: 'POST', body: 'payload',
+    });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), 'late');
+  } finally {
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
 test('上游連線失敗時回傳 502 JSON', async () => {
   const unavailable = http.createServer();
   await listen(unavailable);

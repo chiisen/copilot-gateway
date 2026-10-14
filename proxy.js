@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 
 const DEFAULT_PORT = 43187;
+const DEFAULT_HEADER_TIMEOUT_MS = 60_000;
 const sessionID = 'vscode-copilot-' + randomUUID();
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -89,7 +90,8 @@ function portInUseMessage(port, execFile = execFileSync, platform = process.plat
   return `[啟動失敗] 連接埠 ${port} 已被占用。${occupant}請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`;
 }
 
-function createProxy(request = https.request) {
+function createProxy(request = https.request, options = {}) {
+  const headerTimeoutMs = options.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
   return http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
       res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -119,11 +121,15 @@ function createProxy(request = https.request) {
         'user-agent': req.headers['user-agent'] || 'copilot-gateway/1.0',
       },
     }, (proxyRes) => {
+      if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
       proxyRes.on('error', () => res.destroy());
       proxyRes.pipe(res);
     });
 
+    if (headerTimeoutMs > 0 && typeof proxyReq.setTimeout === 'function') {
+      proxyReq.setTimeout(headerTimeoutMs, () => proxyReq.destroy());
+    }
     proxyReq.on('error', (err) => {
       if (res.destroyed) return;
       console.error('[Proxy 錯誤]:', err.message);
