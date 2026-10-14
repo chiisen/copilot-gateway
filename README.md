@@ -15,18 +15,33 @@ node proxy.js
 若客戶端未提供 `x-opencode-session`，代理使用本次啟動產生的固定 UUID；重啟後會更新。
 這是暫時 workaround：不同對話共用備援 ID，並非官方要求的每段對話獨立 ID。客戶端已有該標頭時會保留。
 服務僅監聽 `127.0.0.1:43187`；在執行終端按 `Ctrl+C` 可停止。
-可用 `COPILOT_GATEWAY_PORT` 環境變數更換連接埠。若連接埠已被占用，啟動會失敗並盡量顯示占用程序名稱與 pid：macOS / Linux 使用 `lsof -F`，Windows 使用 PowerShell 的 `Get-NetTCPConnection`。查詢逾時或失敗時仍會提示改埠或停止占用程序。PowerShell 範例：
+可用 `COPILOT_GATEWAY_PORT` 環境變數更換連接埠。查詢逾時或失敗時仍會提示改埠或停止占用程序。PowerShell 範例：
 
 ```powershell
 $env:COPILOT_GATEWAY_PORT = '43188'
 node proxy.js
 ```
 
-macOS / Linux 範例：
+Linux 範例：
 
 ```sh
 COPILOT_GATEWAY_PORT=43188 node proxy.js
 ```
+
+macOS 的環境變數寫法與 Linux 相同。
+
+### Windows 與 Linux 的差異
+
+代理的轉送、健康檢查、逾時與終端機狀態列在兩個系統上相同。不同的是啟動方式，以及連接埠被占用時怎麼查出程序。
+
+| 項目 | Linux | Windows |
+| --- | --- | --- |
+| 更換連接埠 | `COPILOT_GATEWAY_PORT=43188 node proxy.js` | `$env:COPILOT_GATEWAY_PORT = '43188'`，下一行再執行 `node proxy.js` |
+| 占用連接埠時 | 使用 `lsof -F`。系統需已安裝 `lsof` 並可在 `PATH` 找到 | 使用 PowerShell 的 `Get-NetTCPConnection` 與 `Get-Process` |
+| 查不到占用程序時 | 仍提示改用其他連接埠或停止占用程序，結束碼為 1 | 相同 |
+| VS Code 設定檔 | `~/.config/Code/User/chatLanguageModels.json` | `%APPDATA%\Code\User\chatLanguageModels.json` |
+
+macOS 的占用查詢與 Linux 相同，都使用 `lsof -F`。
 
 啟動後可開啟 `http://127.0.0.1:43187/healthz` 確認代理正在執行；若更換連接埠，請相應更新網址。在互動終端機中，畫面會持續顯示服務運作中、轉送次數與最近上游狀態碼。正常為綠色，仍有異常時運作狀態改為黃色，異常訊息與 5xx 狀態碼為紅色。設定 `NO_COLOR` 時不使用顏色。轉送失敗或上游 5xx 會立刻出現在最近異常，下一筆成功轉送後清除。`Ctrl+C` 會印出已停止。輸出被導向檔案時只保留靜態啟動資訊。
 
@@ -36,6 +51,8 @@ COPILOT_GATEWAY_PORT=43188 node proxy.js
 
 - Windows：`%APPDATA%\Code\User\chatLanguageModels.json`
 - Windows Insiders：`%APPDATA%\Code - Insiders\User\chatLanguageModels.json`
+- Linux：`~/.config/Code/User/chatLanguageModels.json`
+- Linux Insiders：`~/.config/Code - Insiders/User/chatLanguageModels.json`
 - macOS：`~/Library/Application Support/Code/User/chatLanguageModels.json`
 - macOS Insiders：`~/Library/Application Support/Code - Insiders/User/chatLanguageModels.json`
 
