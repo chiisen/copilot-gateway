@@ -106,6 +106,51 @@ function startScreen(port, sessionID, color = process.stdout.isTTY && !process.e
   return [paint('1', 'copilot-gateway'), ...body].join('\n');
 }
 
+function createLiveStatus({
+  write = (text) => process.stdout.write(text),
+  color = false,
+  intervalMs = 120,
+  clock = () => new Date().toLocaleTimeString('zh-TW', { hour12: false }),
+} = {}) {
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const paint = (code, text) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
+  let frame = 0;
+  let fault = null;
+  let timer = null;
+
+  function render() {
+    const time = clock();
+    const running = `${paint('36', frames[frame % frames.length])} 服務運作中  ${paint('2', time)}`;
+    frame += 1;
+    const detail = fault
+      ? `${paint('33', '!')} 最近異常  ${fault.message}  ${paint('2', fault.time)}`
+      : paint('2', '最近異常  無');
+    write(`\x1b[2A\x1b[2K${running}\n\x1b[2K${detail}\n`);
+  }
+
+  return {
+    start() {
+      write('\n\n');
+      render();
+      if (intervalMs > 0) {
+        timer = setInterval(render, intervalMs);
+        if (typeof timer.unref === 'function') timer.unref();
+      }
+    },
+    fault(err) {
+      fault = {
+        message: String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 120),
+        time: clock(),
+      };
+      render();
+    },
+    stop() {
+      if (timer) clearInterval(timer);
+      timer = null;
+    },
+  };
+}
+
 function portInUseMessage(port, execFile = execFileSync, platform = process.platform) {
   const listener = lookupPortListener(port, execFile, platform);
   const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
@@ -145,6 +190,9 @@ function createProxy(request = https.request, options = {}) {
     }, (proxyRes) => {
       if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
+      if (proxyRes.statusCode >= 500 && typeof options.onProxyError === 'function') {
+        options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`));
+      }
       proxyRes.on('error', () => res.destroy());
       proxyRes.pipe(res);
     });
@@ -154,7 +202,8 @@ function createProxy(request = https.request, options = {}) {
     }
     proxyReq.on('error', (err) => {
       if (res.destroyed) return;
-      console.error('[Proxy 錯誤]:', err.message);
+      if (typeof options.onProxyError === 'function') options.onProxyError(err);
+      else console.error('[Proxy 錯誤]:', err.message);
       if (res.headersSent) {
         res.destroy();
         return;
@@ -178,8 +227,17 @@ if (require.main === module) {
     console.error('[設定錯誤] COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數。');
     process.exitCode = 1;
   } else {
-    const server = createProxy();
+    const live = process.stdout.isTTY
+      ? createLiveStatus({ color: !process.env.NO_COLOR })
+      : null;
+    const server = createProxy(https.request, {
+      onProxyError(err) {
+        if (live) live.fault(err);
+        else console.error('[Proxy 錯誤]:', err.message);
+      },
+    });
     server.on('error', (err) => {
+      if (live) live.stop();
       if (err.code === 'EADDRINUSE') {
         console.error(portInUseMessage(port));
       } else {
@@ -187,10 +245,18 @@ if (require.main === module) {
       }
       process.exitCode = 1;
     });
+    if (live) {
+      process.once('SIGINT', () => {
+        live.stop();
+        process.stdout.write('\n');
+        process.exit(0);
+      });
+    }
     server.listen(port, '127.0.0.1', () => {
       console.log(startScreen(port, sessionID));
+      if (live) live.start();
     });
   }
 }
 
-module.exports = { createProxy, lookupPortListener, portInUseMessage };
+module.exports = { createProxy, createLiveStatus, lookupPortListener, portInUseMessage };

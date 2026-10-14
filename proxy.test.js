@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { PassThrough } = require('node:stream');
-const { createProxy, lookupPortListener, portInUseMessage } = require('./proxy');
+const { createProxy, createLiveStatus, lookupPortListener, portInUseMessage } = require('./proxy');
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -292,6 +292,23 @@ test('連接埠被占用時顯示可操作的錯誤', async () => {
   } finally {
     await close(occupied);
   }
+});
+
+test('運作動畫保持服務狀態並立即顯示異常', () => {
+  const frames = [];
+  const status = createLiveStatus({
+    write: (text) => frames.push(text),
+    color: false,
+    intervalMs: 0,
+    clock: () => '12:00:00',
+  });
+  status.start();
+  assert.match(frames.at(-1), /服務運作中\s+12:00:00/);
+  assert.match(frames.at(-1), /最近異常\s+無/);
+  status.fault(new Error('socket hang up'));
+  assert.match(frames.at(-1), /最近異常\s+socket hang up\s+12:00:00/);
+  assert.match(frames.at(-1), /服務運作中/);
+  status.stop();
 });
 
 test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () => {
