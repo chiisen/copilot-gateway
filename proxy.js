@@ -90,20 +90,27 @@ function displayWidth(text) {
   return width;
 }
 
-function startScreen(port, sessionID, color = process.stdout.isTTY && !process.env.NO_COLOR) {
+function screen(title, rows, color) {
   const paint = (code, text) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
-  const rows = [
-    ['API Base', `http://127.0.0.1:${port}/zen/go/v1`],
-    ['健康檢查', `http://127.0.0.1:${port}/healthz`],
-    ['Session', sessionID],
-    ['停止', 'Ctrl+C'],
-  ];
   const labelWidth = Math.max(...rows.map(([label]) => displayWidth(label)));
   const body = rows.map(([label, value]) => {
     const gap = ' '.repeat(labelWidth - displayWidth(label));
     return `  ${paint('2', label)}${gap}  ${value}`;
   });
-  return [paint('1', 'copilot-gateway'), ...body].join('\n');
+  return [paint('1', title), ...body].join('\n');
+}
+
+function startScreen(port, sessionID, color = process.stdout.isTTY && !process.env.NO_COLOR) {
+  return screen('copilot-gateway', [
+    ['API Base', `http://127.0.0.1:${port}/zen/go/v1`],
+    ['健康檢查', `http://127.0.0.1:${port}/healthz`],
+    ['Session', sessionID],
+    ['停止', 'Ctrl+C'],
+  ], color);
+}
+
+function failureScreen(rows) {
+  return screen('copilot-gateway', rows, process.stderr.isTTY && !process.env.NO_COLOR);
 }
 
 function createLiveStatus({
@@ -117,10 +124,13 @@ function createLiveStatus({
   let frame = 0;
   let fault = null;
   let timer = null;
+  let forwarded = 0;
+  let lastStatus = null;
 
   function render() {
     const time = clock();
-    const running = `${paint('36', frames[frame % frames.length])} 服務運作中  ${paint('2', time)}`;
+    const activity = lastStatus === null ? '轉送 0' : `轉送 ${forwarded}  最近 ${lastStatus}`;
+    const running = `${paint('36', frames[frame % frames.length])} 服務運作中  ${activity}  ${paint('2', time)}`;
     frame += 1;
     const detail = fault
       ? `${paint('33', '!')} 最近異常  ${fault.message}  ${paint('2', fault.time)}`
@@ -136,6 +146,12 @@ function createLiveStatus({
         timer = setInterval(render, intervalMs);
         if (typeof timer.unref === 'function') timer.unref();
       }
+    },
+    record(statusCode) {
+      forwarded += 1;
+      lastStatus = statusCode;
+      if (statusCode < 500) fault = null;
+      render();
     },
     fault(err) {
       fault = {
@@ -154,7 +170,10 @@ function createLiveStatus({
 function portInUseMessage(port, execFile = execFileSync, platform = process.platform) {
   const listener = lookupPortListener(port, execFile, platform);
   const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
-  return `[啟動失敗] 連接埠 ${port} 已被占用。${occupant}請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`;
+  return failureScreen([
+    ['原因', `連接埠 ${port} 已被占用。${occupant}`],
+    ['下一步', '請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。'],
+  ]);
 }
 
 function createProxy(request = https.request, options = {}) {
@@ -190,6 +209,7 @@ function createProxy(request = https.request, options = {}) {
     }, (proxyRes) => {
       if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
+      if (typeof options.onProxyResult === 'function') options.onProxyResult(proxyRes.statusCode);
       if (proxyRes.statusCode >= 500 && typeof options.onProxyError === 'function') {
         options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`));
       }
@@ -224,13 +244,19 @@ if (require.main === module) {
   const configuredPort = process.env.COPILOT_GATEWAY_PORT || DEFAULT_PORT;
   const port = Number(configuredPort);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    console.error('[設定錯誤] COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數。');
+    console.error(failureScreen([
+      ['原因', 'COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數。'],
+      ['下一步', '請改為有效連接埠後重新啟動。'],
+    ]));
     process.exitCode = 1;
   } else {
     const live = process.stdout.isTTY
       ? createLiveStatus({ color: !process.env.NO_COLOR })
       : null;
     const server = createProxy(https.request, {
+      onProxyResult(statusCode) {
+        if (live) live.record(statusCode);
+      },
       onProxyError(err) {
         if (live) live.fault(err);
         else console.error('[Proxy 錯誤]:', err.message);
@@ -245,13 +271,11 @@ if (require.main === module) {
       }
       process.exitCode = 1;
     });
-    if (live) {
-      process.once('SIGINT', () => {
-        live.stop();
-        process.stdout.write('\n');
-        process.exit(0);
-      });
-    }
+    process.once('SIGINT', () => {
+      if (live) live.stop();
+      console.log('已停止');
+      process.exit(0);
+    });
     server.listen(port, '127.0.0.1', () => {
       console.log(startScreen(port, sessionID));
       if (live) live.start();

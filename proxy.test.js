@@ -303,12 +303,60 @@ test('運作動畫保持服務狀態並立即顯示異常', () => {
     clock: () => '12:00:00',
   });
   status.start();
-  assert.match(frames.at(-1), /服務運作中\s+12:00:00/);
+  assert.match(frames.at(-1), /服務運作中\s+轉送 0\s+12:00:00/);
   assert.match(frames.at(-1), /最近異常\s+無/);
   status.fault(new Error('socket hang up'));
   assert.match(frames.at(-1), /最近異常\s+socket hang up\s+12:00:00/);
-  assert.match(frames.at(-1), /服務運作中/);
+  assert.match(frames.at(-1), /轉送 0/);
+  status.record(201);
+  assert.match(frames.at(-1), /轉送 1\s+最近 201/);
+  assert.match(frames.at(-1), /最近異常\s+無/);
+  status.record(502);
+  status.fault(new Error('上游回應 502'));
+  assert.match(frames.at(-1), /最近異常\s+上游回應 502/);
+  status.record(200);
+  assert.match(frames.at(-1), /轉送 3\s+最近 200/);
+  assert.match(frames.at(-1), /最近異常\s+無/);
   status.stop();
+});
+
+test('健康檢查不計入轉送，上游回應才回報狀態碼', async () => {
+  const results = [];
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(201, { 'Content-Type': 'text/plain' });
+    res.end('ok');
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback), { onProxyResult: (statusCode) => results.push(statusCode) });
+  await listen(proxy);
+  const baseURL = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    assert.equal((await fetch(`${baseURL}/healthz`)).status, 200);
+    assert.equal((await fetch(`${baseURL}/zen/go/v1/chat/completions`, { method: 'OPTIONS' })).status, 204);
+    assert.equal((await fetch(`${baseURL}/test`, { method: 'POST', body: 'payload' })).status, 201);
+    assert.deepEqual(results, [201]);
+  } finally {
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
+test('Ctrl+C 顯示已停止', async () => {
+  const reservation = http.createServer();
+  await listen(reservation);
+  const port = reservation.address().port;
+  await close(reservation);
+  const processHandle = launchProxy(port);
+  try {
+    await waitForOutput(processHandle, `http://127.0.0.1:${port}/healthz`);
+    processHandle.child.kill('SIGINT');
+    const result = await processHandle.exited;
+    assert.equal(result.code, 0);
+    assert.match(result.stdout(), /已停止/);
+  } finally {
+    processHandle.child.kill();
+  }
 });
 
 test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () => {
@@ -323,6 +371,7 @@ test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () 
     assert.match(processHandle.stdout(), /copilot-gateway/);
     assert.match(processHandle.stdout(), new RegExp(`http://127\\.0\\.0\\.1:${port}/zen/go/v1`));
     assert.match(processHandle.stdout(), /Session\s+vscode-copilot-/);
+    assert.equal(processHandle.stdout().includes('\x1b['), false);
     const response = await fetch(`http://127.0.0.1:${port}/healthz`);
     assert.equal(response.status, 200);
   } finally {
