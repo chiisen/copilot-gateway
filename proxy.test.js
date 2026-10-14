@@ -318,6 +318,24 @@ test('運作動畫保持服務狀態並立即顯示異常', () => {
   assert.match(frames.at(-1), /轉送 3\s+最近 200/);
   assert.match(frames.at(-1), /最近異常\s+無/);
   status.stop();
+
+  const colored = [];
+  const coloredStatus = createLiveStatus({
+    write: (text) => colored.push(text),
+    color: true,
+    intervalMs: 0,
+    clock: () => '12:00:00',
+  });
+  coloredStatus.start();
+  assert.match(colored.at(-1), /\x1b\[32m服務運作中/);
+  coloredStatus.fault(new Error('socket hang up'));
+  assert.match(colored.at(-1), /\x1b\[33m服務運作中/);
+  assert.match(colored.at(-1), /\x1b\[31m最近異常/);
+  coloredStatus.record(201);
+  assert.match(colored.at(-1), /\x1b\[32m201/);
+  coloredStatus.record(503);
+  assert.match(colored.at(-1), /\x1b\[31m503/);
+  coloredStatus.stop();
 });
 
 test('健康檢查不計入轉送，上游回應才回報狀態碼', async () => {

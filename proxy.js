@@ -129,12 +129,16 @@ function createLiveStatus({
 
   function render() {
     const time = clock();
-    const activity = lastStatus === null ? '轉送 0' : `轉送 ${forwarded}  最近 ${lastStatus}`;
-    const running = `${paint('36', frames[frame % frames.length])} 服務運作中  ${activity}  ${paint('2', time)}`;
+    const tone = fault ? '33' : '32';
+    const statusTone = lastStatus >= 500 ? '31' : '32';
+    const activity = lastStatus === null
+      ? '轉送 0'
+      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}`;
+    const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${activity}  ${paint('2', time)}`;
     frame += 1;
     const detail = fault
-      ? `${paint('33', '!')} 最近異常  ${fault.message}  ${paint('2', fault.time)}`
-      : paint('2', '最近異常  無');
+      ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
+      : `${paint('32', '最近異常')}  ${paint('32', '無')}`;
     write(`\x1b[2A\x1b[2K${running}\n\x1b[2K${detail}\n`);
   }
 
