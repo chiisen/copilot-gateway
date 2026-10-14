@@ -193,7 +193,8 @@ test('連接埠被占用時顯示可操作的錯誤', async () => {
   try {
     const result = await processHandle.exited;
     assert.equal(result.code, 1);
-    assert.match(result.stderr(), /連接埠 .* 已被占用/);
+    assert.match(result.stderr(), new RegExp(`連接埠 ${occupied.address().port} 已被占用`));
+    assert.match(result.stderr(), new RegExp(`pid ${process.pid}`));
     assert.match(result.stderr(), /COPILOT_GATEWAY_PORT/);
   } finally {
     await close(occupied);

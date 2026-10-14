@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const https = require('node:https');
+const { execFileSync } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 
 const DEFAULT_PORT = 43187;
@@ -34,6 +35,30 @@ function endToEndHeaders(headers) {
     delete filtered[name];
   }
   return filtered;
+}
+
+function portListener(port) {
+  let output;
+  try {
+    output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return null;
+  }
+
+  const row = output.trim().split('\n').find((line) => line && !line.startsWith('COMMAND'));
+  if (!row) return null;
+  const [command, pid] = row.trim().split(/\s+/);
+  if (!command || !/^\d+$/.test(pid)) return null;
+  return { command, pid };
+}
+
+function portInUseMessage(port) {
+  const listener = portListener(port);
+  const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
+  return `[啟動失敗] 連接埠 ${port} 已被占用。${occupant}請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`;
 }
 
 function createProxy(request = https.request) {
@@ -100,7 +125,7 @@ if (require.main === module) {
     const server = createProxy();
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`[啟動失敗] 連接埠 ${port} 已被占用。請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`);
+        console.error(portInUseMessage(port));
       } else {
         console.error('[啟動失敗]:', err.message);
       }
