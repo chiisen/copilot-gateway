@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const { spawn } = require('node:child_process');
 const { PassThrough } = require('node:stream');
-const { createProxy } = require('./proxy');
+const { createProxy, lookupPortListener, portInUseMessage } = require('./proxy');
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -184,6 +184,29 @@ test('拒絕超出範圍或非整數的連接埠設定', async () => {
   const result = await processHandle.exited;
   assert.equal(result.code, 1);
   assert.match(result.stderr(), /COPILOT_GATEWAY_PORT 必須是 1 到 65535 之間的整數/);
+});
+
+test('Windows 連接埠占用時解析程序名稱與 pid', () => {
+  const calls = [];
+  const execFile = (command, args, options) => {
+    calls.push({ command, args, options });
+    return 'Code - Insiders 4321\r\n';
+  };
+  assert.deepEqual(lookupPortListener(43187, execFile, 'win32'), {
+    command: 'Code - Insiders',
+    pid: '4321',
+  });
+  assert.equal(calls[0].command, 'powershell.exe');
+  assert.match(calls[0].args.at(-1), /LocalPort 43187/);
+  assert.equal(calls[0].options.timeout, 2000);
+  assert.match(portInUseMessage(43187, execFile, 'win32'), /占用程序：Code - Insiders（pid 4321）/);
+
+  const fallback = portInUseMessage(43187, () => {
+    throw new Error('powershell unavailable');
+  }, 'win32');
+  assert.match(fallback, /連接埠 43187 已被占用/);
+  assert.match(fallback, /COPILOT_GATEWAY_PORT/);
+  assert.equal(fallback.includes('占用程序'), false);
 });
 
 test('連接埠被占用時顯示可操作的錯誤', async () => {

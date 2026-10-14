@@ -37,26 +37,48 @@ function endToEndHeaders(headers) {
   return filtered;
 }
 
-function portListener(port) {
-  let output;
-  try {
-    output = execFileSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-  } catch {
-    return null;
-  }
-
-  const row = output.trim().split('\n').find((line) => line && !line.startsWith('COMMAND'));
+function parseTableListener(output) {
+  const row = String(output).trim().split('\n').find((line) => line && !line.startsWith('COMMAND'));
   if (!row) return null;
   const [command, pid] = row.trim().split(/\s+/);
   if (!command || !/^\d+$/.test(pid)) return null;
   return { command, pid };
 }
 
-function portInUseMessage(port) {
-  const listener = portListener(port);
+function parseWindowsListener(output) {
+  const line = String(output).trim().split('\n').find((item) => item.trim());
+  if (!line) return null;
+  const match = line.trim().match(/^(.*) (\d+)$/);
+  if (!match || !match[1]) return null;
+  return { command: match[1], pid: match[2] };
+}
+
+function lookupPortListener(port, execFile = execFileSync, platform = process.platform) {
+  if (!Number.isInteger(port)) return null;
+  try {
+    if (platform === 'win32') {
+      const script = [
+        `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1`,
+        'if ($c) { $p = Get-Process -Id $c.OwningProcess -ErrorAction SilentlyContinue; if ($p) { Write-Output ($p.ProcessName + \' \' + $c.OwningProcess) } }',
+      ].join('; ');
+      return parseWindowsListener(execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8',
+        timeout: 2000,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }));
+    }
+    return parseTableListener(execFile('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }));
+  } catch {
+    return null;
+  }
+}
+
+function portInUseMessage(port, execFile = execFileSync, platform = process.platform) {
+  const listener = lookupPortListener(port, execFile, platform);
   const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
   return `[啟動失敗] 連接埠 ${port} 已被占用。${occupant}請設定 COPILOT_GATEWAY_PORT 改用其他連接埠，或先停止占用該連接埠的程序。`;
 }
@@ -139,4 +161,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { createProxy };
+module.exports = { createProxy, lookupPortListener, portInUseMessage };
