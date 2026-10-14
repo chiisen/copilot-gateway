@@ -84,6 +84,28 @@ function lookupPortListener(port, execFile = execFileSync, platform = process.pl
   }
 }
 
+function displayWidth(text) {
+  let width = 0;
+  for (const char of text) width += char.codePointAt(0) > 0xff ? 2 : 1;
+  return width;
+}
+
+function startScreen(port, sessionID, color = process.stdout.isTTY && !process.env.NO_COLOR) {
+  const paint = (code, text) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
+  const rows = [
+    ['API Base', `http://127.0.0.1:${port}/zen/go/v1`],
+    ['健康檢查', `http://127.0.0.1:${port}/healthz`],
+    ['Session', sessionID],
+    ['停止', 'Ctrl+C'],
+  ];
+  const labelWidth = Math.max(...rows.map(([label]) => displayWidth(label)));
+  const body = rows.map(([label, value]) => {
+    const gap = ' '.repeat(labelWidth - displayWidth(label));
+    return `  ${paint('2', label)}${gap}  ${value}`;
+  });
+  return [paint('1', 'copilot-gateway'), ...body].join('\n');
+}
+
 function portInUseMessage(port, execFile = execFileSync, platform = process.platform) {
   const listener = lookupPortListener(port, execFile, platform);
   const occupant = listener ? `占用程序：${listener.command}（pid ${listener.pid}）。` : '';
@@ -166,9 +188,7 @@ if (require.main === module) {
       process.exitCode = 1;
     });
     server.listen(port, '127.0.0.1', () => {
-      console.log(`[Proxy] 本次啟動的備援 Session ID: ${sessionID}`);
-      console.log(`API Base: http://127.0.0.1:${port}/zen/go/v1`);
-      console.log(`健康檢查: http://127.0.0.1:${port}/healthz`);
+      console.log(startScreen(port, sessionID));
     });
   }
 }

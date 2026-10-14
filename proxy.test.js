@@ -302,8 +302,10 @@ test('使用指定連接埠啟動並印出 API 與健康檢查網址', async () 
 
   const processHandle = launchProxy(port);
   try {
-    await waitForOutput(processHandle, `健康檢查: http://127.0.0.1:${port}/healthz`);
-    assert.match(processHandle.stdout(), new RegExp(`API Base: http://127\\.0\\.0\\.1:${port}/zen/go/v1`));
+    await waitForOutput(processHandle, `http://127.0.0.1:${port}/healthz`);
+    assert.match(processHandle.stdout(), /copilot-gateway/);
+    assert.match(processHandle.stdout(), new RegExp(`http://127\\.0\\.0\\.1:${port}/zen/go/v1`));
+    assert.match(processHandle.stdout(), /Session\s+vscode-copilot-/);
     const response = await fetch(`http://127.0.0.1:${port}/healthz`);
     assert.equal(response.status, 200);
   } finally {
