@@ -474,6 +474,63 @@ test('客戶端中止上傳時取消上游請求', async () => {
   }
 });
 
+function collectStream(url) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let firstByteMs = null;
+    let chunks = 0;
+    let bytes = 0;
+    http.get(url, (res) => {
+      res.on('data', (chunk) => {
+        if (firstByteMs === null) firstByteMs = Date.now() - startedAt;
+        chunks += 1;
+        bytes += chunk.length;
+      });
+      res.on('end', () => resolve({
+        firstByteMs,
+        totalMs: Date.now() - startedAt,
+        chunks,
+        bytes,
+      }));
+    }).on('error', reject);
+  });
+}
+
+test('本機串流經過代理的額外延遲維持在小範圍', async () => {
+  const chunkCount = 40;
+  const intervalMs = 15;
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    let sent = 0;
+    const timer = setInterval(() => {
+      res.write(`data: ${String(sent).padStart(16, '0')}\n\n`);
+      sent += 1;
+      if (sent === chunkCount) {
+        clearInterval(timer);
+        res.end();
+      }
+    }, intervalMs);
+    res.on('close', () => clearInterval(timer));
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback));
+  await listen(proxy);
+  try {
+    const direct = await collectStream(`http://127.0.0.1:${upstream.address().port}/stream`);
+    const viaProxy = await collectStream(`http://127.0.0.1:${proxy.address().port}/stream`);
+    const detail = `直連首塊 ${direct.firstByteMs}ms、總計 ${direct.totalMs}ms、${direct.chunks} 塊；代理首塊 ${viaProxy.firstByteMs}ms、總計 ${viaProxy.totalMs}ms、${viaProxy.chunks} 塊`;
+    assert.equal(viaProxy.bytes, direct.bytes, detail);
+    assert.equal(viaProxy.chunks, direct.chunks, detail);
+    assert.ok(viaProxy.firstByteMs - direct.firstByteMs < 80, detail);
+    assert.ok(viaProxy.totalMs - direct.totalMs < 150, detail);
+  } finally {
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
 test('上游送出標頭後斷線時關閉下游串流', async () => {
   const upstream = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Length': '100', 'Content-Type': 'text/plain' });
