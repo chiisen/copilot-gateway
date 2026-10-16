@@ -37,11 +37,12 @@ function formatDuration(durationMs) {
   return `${(durationMs / 1000).toFixed(1)}s`;
 }
 
-function speedLabel(durationMs, paint) {
+function phaseText(label, durationMs, paint) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return `${label} —`;
   const slow = durationMs >= SLOW_HEADER_MS;
   const tone = slow ? '33' : '32';
-  const pace = slow ? '慢' : '快';
-  return `速度 ${paint(tone, pace)} ${formatDuration(durationMs)}`;
+  const pace = slow ? `慢 ${formatDuration(durationMs)}` : formatDuration(durationMs);
+  return `${label} ${paint(tone, pace)}`;
 }
 
 function median(values) {
@@ -68,16 +69,20 @@ function createLiveStatus({
   let timeouts = 0;
   let aborts = 0;
   let lastStatus = null;
-  let lastDurationMs = null;
+  let lastPhases = null;
   const outcomes = [];
-  const durations = [];
+  const phaseSamples = { connectMs: [], uploadMs: [], upstreamMs: [] };
 
-  function remember(ok, durationMs) {
+  function remember(ok, phases) {
     outcomes.push(ok);
     if (outcomes.length > RECENT_WINDOW) outcomes.shift();
-    if (Number.isFinite(durationMs) && durationMs >= 0) {
-      durations.push(durationMs);
-      if (durations.length > RECENT_WINDOW) durations.shift();
+    if (!phases) return;
+    lastPhases = phases;
+    for (const key of Object.keys(phaseSamples)) {
+      const value = phases[key];
+      if (!Number.isFinite(value) || value < 0) continue;
+      phaseSamples[key].push(value);
+      if (phaseSamples[key].length > RECENT_WINDOW) phaseSamples[key].shift();
     }
   }
 
@@ -85,18 +90,22 @@ function createLiveStatus({
     const time = clock();
     const tone = fault ? '33' : '32';
     const statusTone = lastStatus >= 500 ? '31' : '32';
-    const speed = lastDurationMs === null ? '' : `  ${speedLabel(lastDurationMs, paint)}`;
+    const phases = lastPhases
+      ? `  ${phaseText('連線', lastPhases.connectMs, paint)}  ${phaseText('上傳', lastPhases.uploadMs, paint)}  ${phaseText('上游', lastPhases.upstreamMs, paint)}`
+      : '';
     const traffic = lastStatus === null
       ? '轉送 0'
-      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}${speed}`;
+      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}${phases}`;
     const succeeded = outcomes.filter(Boolean).length;
     const failed = outcomes.length - succeeded;
     const failureTone = failed > 0 ? '31' : '32';
     const timeoutTone = timeouts > 0 ? '31' : '32';
-    const headerWait = median(durations);
-    const waitText = headerWait === null ? '—' : formatDuration(headerWait);
+    const medianText = ['連線', '上傳', '上游'].map((label, index) => {
+      const key = ['connectMs', 'uploadMs', 'upstreamMs'][index];
+      return phaseText(label, median(phaseSamples[key]), paint);
+    }).join(' ');
     const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${traffic}  進行中 ${paint('2', String(inflight))}  ${paint('2', time)}`;
-    const recent = `近20筆 成功 ${paint('32', String(succeeded))} 失敗 ${paint(failureTone, String(failed))}  等待中位 ${waitText}  逾時 ${paint(timeoutTone, String(timeouts))}  中斷 ${paint('2', String(aborts))}`;
+    const recent = `近20筆 成功 ${paint('32', String(succeeded))} 失敗 ${paint(failureTone, String(failed))}  中位 ${medianText}  逾時 ${paint(timeoutTone, String(timeouts))}  中斷 ${paint('2', String(aborts))}`;
     frame += 1;
     const detail = fault
       ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
@@ -124,25 +133,24 @@ function createLiveStatus({
       inflight += 1;
       render();
     },
-    record(statusCode, durationMs) {
+    record(statusCode, durationMs, phases) {
       forwarded += 1;
       if (inflight > 0) inflight -= 1;
       lastStatus = statusCode;
-      if (Number.isFinite(durationMs) && durationMs >= 0) lastDurationMs = durationMs;
-      remember(statusCode < 500, durationMs);
+      remember(statusCode < 500, phases);
       if (statusCode < 500) fault = null;
       render();
     },
-    disconnect(err) {
+    disconnect(err, phases) {
       if (inflight > 0) inflight -= 1;
-      remember(false);
+      remember(false, phases);
       noteFault(err);
       render();
     },
-    timeout(err) {
+    timeout(err, phases) {
       timeouts += 1;
       if (inflight > 0) inflight -= 1;
-      remember(false);
+      remember(false, phases);
       noteFault(err);
       render();
     },

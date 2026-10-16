@@ -68,9 +68,26 @@ function createProxy(request = https.request, options = {}) {
     }
 
     const startedAt = Date.now();
+    let connectedAt = null;
+    let uploadedAt = null;
     let settled = false;
     let headersSeen = false;
     let timedOut = false;
+    const markConnected = () => {
+      if (connectedAt === null) connectedAt = Date.now();
+    };
+    const phaseSnapshot = (now = Date.now()) => {
+      const connectMs = connectedAt === null ? null : connectedAt - startedAt;
+      if (connectedAt === null) return { connectMs, uploadMs: null, upstreamMs: null };
+      if (uploadedAt === null) {
+        return { connectMs, uploadMs: Math.max(0, now - connectedAt), upstreamMs: null };
+      }
+      return {
+        connectMs,
+        uploadMs: Math.max(0, uploadedAt - connectedAt),
+        upstreamMs: Math.max(0, now - uploadedAt),
+      };
+    };
     const settle = () => {
       if (settled) return false;
       settled = true;
@@ -94,7 +111,7 @@ function createProxy(request = https.request, options = {}) {
       if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
       if (typeof options.onProxyResult === 'function') {
-        options.onProxyResult(proxyRes.statusCode, Date.now() - startedAt);
+        options.onProxyResult(proxyRes.statusCode, Date.now() - startedAt, phaseSnapshot());
       }
       if (proxyRes.statusCode >= 500 && typeof options.onProxyError === 'function') {
         options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`), 'status');
@@ -113,9 +130,9 @@ function createProxy(request = https.request, options = {}) {
       const pending = !headersSeen && settle();
       const clientAlreadyLeft = !headersSeen && !pending;
       if (!clientAlreadyLeft && pending && timedOut && typeof options.onHeaderTimeout === 'function') {
-        options.onHeaderTimeout(new Error('上游標頭逾時'));
+        options.onHeaderTimeout(new Error('上游標頭逾時'), phaseSnapshot());
       } else if (!clientAlreadyLeft && typeof options.onProxyError === 'function') {
-        options.onProxyError(err, pending ? 'connect' : 'late');
+        options.onProxyError(err, pending ? 'connect' : 'late', phaseSnapshot());
       } else if (!clientAlreadyLeft) console.error('[Proxy 錯誤]:', err.message);
       if (res.destroyed || clientAlreadyLeft) return;
       if (res.headersSent) {
@@ -131,6 +148,18 @@ function createProxy(request = https.request, options = {}) {
       proxyReq.destroy();
     });
     req.on('error', () => proxyReq.destroy());
+    proxyReq.on('socket', (socket) => {
+      if (socket.encrypted) {
+        if (socket.authorized) markConnected();
+        else socket.once('secureConnect', markConnected);
+        return;
+      }
+      if (socket.connecting) socket.once('connect', markConnected);
+      else markConnected();
+    });
+    proxyReq.on('finish', () => {
+      if (uploadedAt === null) uploadedAt = Date.now();
+    });
     res.on('close', () => {
       if (!res.writableFinished) proxyReq.destroy();
     });
@@ -155,22 +184,22 @@ if (require.main === module) {
       onProxyStart() {
         if (live) live.begin();
       },
-      onProxyResult(statusCode, durationMs) {
-        if (live) live.record(statusCode, durationMs);
+      onProxyResult(statusCode, durationMs, phases) {
+        if (live) live.record(statusCode, durationMs, phases);
       },
-      onHeaderTimeout(err) {
-        if (live) live.timeout(err);
+      onHeaderTimeout(err, phases) {
+        if (live) live.timeout(err, phases);
         else console.error('[Proxy 錯誤]:', err.message);
       },
       onClientAbort(pending) {
         if (live) live.abort(pending);
       },
-      onProxyError(err, reason) {
+      onProxyError(err, reason, phases) {
         if (!live) {
           console.error('[Proxy 錯誤]:', err.message);
           return;
         }
-        if (reason === 'connect') live.disconnect(err);
+        if (reason === 'connect') live.disconnect(err, phases);
         else live.fault(err);
       },
     });
