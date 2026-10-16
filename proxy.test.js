@@ -303,20 +303,46 @@ test('運作動畫保持服務狀態並立即顯示異常', () => {
     clock: () => '12:00:00',
   });
   status.start();
-  assert.match(frames.at(-1), /服務運作中\s+轉送 0\s+12:00:00/);
+  assert.match(frames.at(-1), /服務運作中\s+轉送 0\s+進行中 0\s+12:00:00/);
+  assert.match(frames.at(-1), /近20筆\s+成功 0\s+失敗 0\s+等待中位 —\s+逾時 0\s+中斷 0/);
   assert.match(frames.at(-1), /最近異常\s+無/);
+  status.begin();
+  assert.match(frames.at(-1), /進行中 1/);
   status.fault(new Error('socket hang up'));
   assert.match(frames.at(-1), /最近異常\s+socket hang up\s+12:00:00/);
   assert.match(frames.at(-1), /轉送 0/);
+  assert.match(frames.at(-1), /失敗 0/);
   status.record(201);
   assert.match(frames.at(-1), /轉送 1\s+最近 201/);
+  assert.match(frames.at(-1), /進行中 0/);
+  assert.match(frames.at(-1), /成功 1\s+失敗 0/);
   assert.match(frames.at(-1), /最近異常\s+無/);
+  status.begin();
   status.record(502);
   status.fault(new Error('上游回應 502'));
   assert.match(frames.at(-1), /最近異常\s+上游回應 502/);
-  status.record(200);
-  assert.match(frames.at(-1), /轉送 3\s+最近 200/);
+  assert.match(frames.at(-1), /成功 1\s+失敗 1/);
+  status.record(200, 180);
+  assert.match(frames.at(-1), /轉送 3\s+最近 200\s+速度 快 180ms/);
+  assert.match(frames.at(-1), /成功 2\s+失敗 1/);
+  assert.match(frames.at(-1), /等待中位 180ms/);
   assert.match(frames.at(-1), /最近異常\s+無/);
+  status.record(200, 2500);
+  assert.match(frames.at(-1), /轉送 4\s+最近 200\s+速度 慢 2\.5s/);
+  assert.match(frames.at(-1), /等待中位 1\.3s/);
+  status.begin();
+  status.timeout(new Error('上游標頭逾時'));
+  assert.match(frames.at(-1), /逾時 1/);
+  assert.match(frames.at(-1), /成功 3\s+失敗 2/);
+  assert.match(frames.at(-1), /進行中 0/);
+  assert.match(frames.at(-1), /最近異常\s+上游標頭逾時/);
+  status.begin();
+  status.abort(true);
+  assert.match(frames.at(-1), /中斷 1/);
+  assert.match(frames.at(-1), /進行中 0/);
+  assert.match(frames.at(-1), /失敗 2/);
+  status.abort(false);
+  assert.match(frames.at(-1), /中斷 2/);
   status.stop();
 
   const colored = [];
@@ -335,11 +361,16 @@ test('運作動畫保持服務狀態並立即顯示異常', () => {
   assert.match(colored.at(-1), /\x1b\[32m201/);
   coloredStatus.record(503);
   assert.match(colored.at(-1), /\x1b\[31m503/);
+  coloredStatus.record(200, 180);
+  assert.match(colored.at(-1), /\x1b\[32m快/);
+  coloredStatus.record(200, 2500);
+  assert.match(colored.at(-1), /\x1b\[33m慢/);
   coloredStatus.stop();
 });
 
 test('健康檢查不計入轉送，上游回應才回報狀態碼', async () => {
   const results = [];
+  const durations = [];
   const upstream = http.createServer((req, res) => {
     res.writeHead(201, { 'Content-Type': 'text/plain' });
     res.end('ok');
@@ -347,7 +378,10 @@ test('健康檢查不計入轉送，上游回應才回報狀態碼', async () =>
   await listen(upstream);
   const proxy = createProxy((options, callback) => http.request({
     ...options, hostname: '127.0.0.1', port: upstream.address().port,
-  }, callback), { onProxyResult: (statusCode) => results.push(statusCode) });
+  }, callback), { onProxyResult: (statusCode, durationMs) => {
+    results.push(statusCode);
+    durations.push(durationMs);
+  } });
   await listen(proxy);
   const baseURL = `http://127.0.0.1:${proxy.address().port}`;
   try {
@@ -355,6 +389,8 @@ test('健康檢查不計入轉送，上游回應才回報狀態碼', async () =>
     assert.equal((await fetch(`${baseURL}/zen/go/v1/chat/completions`, { method: 'OPTIONS' })).status, 204);
     assert.equal((await fetch(`${baseURL}/test`, { method: 'POST', body: 'payload' })).status, 201);
     assert.deepEqual(results, [201]);
+    assert.equal(durations.length, 1);
+    assert.equal(Number.isFinite(durations[0]) && durations[0] >= 0, true);
   } finally {
     await Promise.all([close(proxy), close(upstream)]);
   }

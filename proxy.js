@@ -67,6 +67,16 @@ function createProxy(request = https.request, options = {}) {
       return;
     }
 
+    const startedAt = Date.now();
+    let settled = false;
+    let headersSeen = false;
+    let timedOut = false;
+    const settle = () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    };
+    if (typeof options.onProxyStart === 'function') options.onProxyStart();
     const proxyReq = request({
       hostname: 'opencode.ai',
       port: 443,
@@ -79,23 +89,35 @@ function createProxy(request = https.request, options = {}) {
         'user-agent': req.headers['user-agent'] || 'copilot-gateway/1.0',
       },
     }, (proxyRes) => {
+      headersSeen = true;
+      settle();
       if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
-      if (typeof options.onProxyResult === 'function') options.onProxyResult(proxyRes.statusCode);
+      if (typeof options.onProxyResult === 'function') {
+        options.onProxyResult(proxyRes.statusCode, Date.now() - startedAt);
+      }
       if (proxyRes.statusCode >= 500 && typeof options.onProxyError === 'function') {
-        options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`));
+        options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`), 'status');
       }
       proxyRes.on('error', () => res.destroy());
       proxyRes.pipe(res);
     });
 
     if (headerTimeoutMs > 0 && typeof proxyReq.setTimeout === 'function') {
-      proxyReq.setTimeout(headerTimeoutMs, () => proxyReq.destroy());
+      proxyReq.setTimeout(headerTimeoutMs, () => {
+        timedOut = true;
+        proxyReq.destroy();
+      });
     }
     proxyReq.on('error', (err) => {
-      if (res.destroyed) return;
-      if (typeof options.onProxyError === 'function') options.onProxyError(err);
-      else console.error('[Proxy 錯誤]:', err.message);
+      const pending = !headersSeen && settle();
+      const clientAlreadyLeft = !headersSeen && !pending;
+      if (!clientAlreadyLeft && pending && timedOut && typeof options.onHeaderTimeout === 'function') {
+        options.onHeaderTimeout(new Error('上游標頭逾時'));
+      } else if (!clientAlreadyLeft && typeof options.onProxyError === 'function') {
+        options.onProxyError(err, pending ? 'connect' : 'late');
+      } else if (!clientAlreadyLeft) console.error('[Proxy 錯誤]:', err.message);
+      if (res.destroyed || clientAlreadyLeft) return;
       if (res.headersSent) {
         res.destroy();
         return;
@@ -103,7 +125,11 @@ function createProxy(request = https.request, options = {}) {
       res.writeHead(502, { ...corsHeaders, 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Proxy forwarding failed' }));
     });
-    req.on('aborted', () => proxyReq.destroy());
+    req.on('aborted', () => {
+      const pending = !headersSeen && settle();
+      if (typeof options.onClientAbort === 'function') options.onClientAbort(pending);
+      proxyReq.destroy();
+    });
     req.on('error', () => proxyReq.destroy());
     res.on('close', () => {
       if (!res.writableFinished) proxyReq.destroy();
@@ -126,12 +152,26 @@ if (require.main === module) {
       ? createLiveStatus({ color: !process.env.NO_COLOR })
       : null;
     const server = createProxy(https.request, {
-      onProxyResult(statusCode) {
-        if (live) live.record(statusCode);
+      onProxyStart() {
+        if (live) live.begin();
       },
-      onProxyError(err) {
-        if (live) live.fault(err);
+      onProxyResult(statusCode, durationMs) {
+        if (live) live.record(statusCode, durationMs);
+      },
+      onHeaderTimeout(err) {
+        if (live) live.timeout(err);
         else console.error('[Proxy 錯誤]:', err.message);
+      },
+      onClientAbort(pending) {
+        if (live) live.abort(pending);
+      },
+      onProxyError(err, reason) {
+        if (!live) {
+          console.error('[Proxy 錯誤]:', err.message);
+          return;
+        }
+        if (reason === 'connect') live.disconnect(err);
+        else live.fault(err);
       },
     });
     server.on('error', (err) => {

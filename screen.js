@@ -29,6 +29,29 @@ function failureScreen(rows) {
   return screen('copilot-gateway', rows, process.stderr.isTTY && !process.env.NO_COLOR);
 }
 
+const SLOW_HEADER_MS = 2000;
+const RECENT_WINDOW = 20;
+
+function formatDuration(durationMs) {
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  return `${(durationMs / 1000).toFixed(1)}s`;
+}
+
+function speedLabel(durationMs, paint) {
+  const slow = durationMs >= SLOW_HEADER_MS;
+  const tone = slow ? '33' : '32';
+  const pace = slow ? '慢' : '快';
+  return `速度 ${paint(tone, pace)} ${formatDuration(durationMs)}`;
+}
+
+function median(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 function createLiveStatus({
   write = (text) => process.stdout.write(text),
   color = false,
@@ -41,43 +64,95 @@ function createLiveStatus({
   let fault = null;
   let timer = null;
   let forwarded = 0;
+  let inflight = 0;
+  let timeouts = 0;
+  let aborts = 0;
   let lastStatus = null;
+  let lastDurationMs = null;
+  const outcomes = [];
+  const durations = [];
+
+  function remember(ok, durationMs) {
+    outcomes.push(ok);
+    if (outcomes.length > RECENT_WINDOW) outcomes.shift();
+    if (Number.isFinite(durationMs) && durationMs >= 0) {
+      durations.push(durationMs);
+      if (durations.length > RECENT_WINDOW) durations.shift();
+    }
+  }
 
   function render() {
     const time = clock();
     const tone = fault ? '33' : '32';
     const statusTone = lastStatus >= 500 ? '31' : '32';
-    const activity = lastStatus === null
+    const speed = lastDurationMs === null ? '' : `  ${speedLabel(lastDurationMs, paint)}`;
+    const traffic = lastStatus === null
       ? '轉送 0'
-      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}`;
-    const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${activity}  ${paint('2', time)}`;
+      : `轉送 ${forwarded}  最近 ${paint(statusTone, String(lastStatus))}${speed}`;
+    const succeeded = outcomes.filter(Boolean).length;
+    const failed = outcomes.length - succeeded;
+    const failureTone = failed > 0 ? '31' : '32';
+    const timeoutTone = timeouts > 0 ? '31' : '32';
+    const headerWait = median(durations);
+    const waitText = headerWait === null ? '—' : formatDuration(headerWait);
+    const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${traffic}  進行中 ${paint('2', String(inflight))}  ${paint('2', time)}`;
+    const recent = `近20筆 成功 ${paint('32', String(succeeded))} 失敗 ${paint(failureTone, String(failed))}  等待中位 ${waitText}  逾時 ${paint(timeoutTone, String(timeouts))}  中斷 ${paint('2', String(aborts))}`;
     frame += 1;
     const detail = fault
       ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
       : `${paint('32', '最近異常')}  ${paint('32', '無')}`;
-    write(`\x1b[2A\x1b[2K${running}\n\x1b[2K${detail}\n`);
+    write(`\x1b[3A\x1b[2K${running}\n\x1b[2K${recent}\n\x1b[2K${detail}\n`);
+  }
+
+  function noteFault(err) {
+    fault = {
+      message: String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 120),
+      time: clock(),
+    };
   }
 
   return {
     start() {
-      write('\n\n');
+      write('\n\n\n');
       render();
       if (intervalMs > 0) {
         timer = setInterval(render, intervalMs);
         if (typeof timer.unref === 'function') timer.unref();
       }
     },
-    record(statusCode) {
+    begin() {
+      inflight += 1;
+      render();
+    },
+    record(statusCode, durationMs) {
       forwarded += 1;
+      if (inflight > 0) inflight -= 1;
       lastStatus = statusCode;
+      if (Number.isFinite(durationMs) && durationMs >= 0) lastDurationMs = durationMs;
+      remember(statusCode < 500, durationMs);
       if (statusCode < 500) fault = null;
       render();
     },
+    disconnect(err) {
+      if (inflight > 0) inflight -= 1;
+      remember(false);
+      noteFault(err);
+      render();
+    },
+    timeout(err) {
+      timeouts += 1;
+      if (inflight > 0) inflight -= 1;
+      remember(false);
+      noteFault(err);
+      render();
+    },
+    abort(pending) {
+      aborts += 1;
+      if (pending && inflight > 0) inflight -= 1;
+      render();
+    },
     fault(err) {
-      fault = {
-        message: String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 120),
-        time: clock(),
-      };
+      noteFault(err);
       render();
     },
     stop() {
