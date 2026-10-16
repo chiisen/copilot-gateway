@@ -70,6 +70,7 @@ function createLiveStatus({
   let aborts = 0;
   let lastStatus = null;
   let lastPhases = null;
+  let lastTransfer = null;
   const outcomes = [];
   const phaseSamples = { connectMs: [], uploadMs: [], upstreamMs: [] };
 
@@ -107,9 +108,12 @@ function createLiveStatus({
     const running = `${paint(tone, frames[frame % frames.length])} ${paint(tone, '服務運作中')}  ${traffic}  進行中 ${paint('2', String(inflight))}  ${paint('2', time)}`;
     const recent = `近20筆 成功 ${paint('32', String(succeeded))} 失敗 ${paint(failureTone, String(failed))}  中位 ${medianText}  逾時 ${paint(timeoutTone, String(timeouts))}  中斷 ${paint('2', String(aborts))}`;
     frame += 1;
-    const detail = fault
+    const transfer = lastTransfer
+      ? `  最近串流 首塊 ${lastTransfer.firstByteMs === null ? '—' : formatDuration(lastTransfer.firstByteMs)}  總計 ${lastTransfer.totalMs === null ? '—' : formatDuration(lastTransfer.totalMs)}  ${lastTransfer.totalMs === null ? '傳送中' : lastTransfer.completed ? '完成' : '未完成'}`
+      : '';
+    const detail = (fault
       ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
-      : `${paint('32', '最近異常')}  ${paint('32', '無')}`;
+      : `${paint('32', '最近異常')}  ${paint('32', '無')}`) + transfer;
     write(`\x1b[3A\x1b[2K${running}\n\x1b[2K${recent}\n\x1b[2K${detail}\n`);
   }
 
@@ -118,6 +122,11 @@ function createLiveStatus({
       message: String(err && err.message ? err.message : err).replace(/\s+/g, ' ').slice(0, 120),
       time: clock(),
     };
+  }
+
+  function refresh() {
+    // 動態模式由定時器統一繪製，避免轉送事件同步寫入終端機。
+    if (intervalMs <= 0) render();
   }
 
   return {
@@ -131,37 +140,45 @@ function createLiveStatus({
     },
     begin() {
       inflight += 1;
-      render();
+      refresh();
     },
     record(statusCode, durationMs, phases) {
       forwarded += 1;
-      if (inflight > 0) inflight -= 1;
       lastStatus = statusCode;
       remember(statusCode < 500, phases);
       if (statusCode < 500) fault = null;
-      render();
+      refresh();
+    },
+    firstByte(durationMs) {
+      lastTransfer = { firstByteMs: durationMs, totalMs: null };
+      refresh();
+    },
+    complete(timing) {
+      if (inflight > 0) inflight -= 1;
+      lastTransfer = timing;
+      refresh();
     },
     disconnect(err, phases) {
       if (inflight > 0) inflight -= 1;
       remember(false, phases);
       noteFault(err);
-      render();
+      refresh();
     },
     timeout(err, phases) {
       timeouts += 1;
       if (inflight > 0) inflight -= 1;
       remember(false, phases);
       noteFault(err);
-      render();
+      refresh();
     },
     abort(pending) {
       aborts += 1;
       if (pending && inflight > 0) inflight -= 1;
-      render();
+      refresh();
     },
     fault(err) {
       noteFault(err);
-      render();
+      refresh();
     },
     stop() {
       if (timer) clearInterval(timer);

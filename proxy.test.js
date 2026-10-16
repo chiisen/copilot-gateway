@@ -314,11 +314,14 @@ test('運作動畫保持服務狀態並立即顯示異常', () => {
   assert.match(frames.at(-1), /失敗 0/);
   status.record(201);
   assert.match(frames.at(-1), /轉送 1\s+最近 201/);
+  assert.match(frames.at(-1), /進行中 1/);
+  status.complete({ firstByteMs: 10, totalMs: 20, completed: true });
   assert.match(frames.at(-1), /進行中 0/);
   assert.match(frames.at(-1), /成功 1\s+失敗 0/);
   assert.match(frames.at(-1), /最近異常\s+無/);
   status.begin();
   status.record(502);
+  status.complete({ firstByteMs: 10, totalMs: 20, completed: true });
   status.fault(new Error('上游回應 502'));
   assert.match(frames.at(-1), /最近異常\s+上游回應 502/);
   assert.match(frames.at(-1), /成功 1\s+失敗 1/);
@@ -495,6 +498,121 @@ function collectStream(url) {
     }).on('error', reject);
   });
 }
+
+test('動態狀態列合併請求更新，不在轉送事件內同步寫入', async () => {
+  const frames = [];
+  let rendered;
+  const status = createLiveStatus({ write: (text) => { frames.push(text); rendered?.(); }, intervalMs: 20 });
+  status.start();
+  const nextFrame = new Promise((resolve) => { rendered = resolve; });
+  const initialCount = frames.length;
+  const keepAlive = setTimeout(() => rendered(), 1000);
+  try {
+    status.begin();
+    status.record(200);
+    assert.equal(frames.length, initialCount);
+    await nextFrame;
+    assert.match(frames.at(-1), /轉送 1/);
+  } finally {
+    clearTimeout(keepAlive);
+    status.stop();
+  }
+});
+
+for (const mode of ['empty', 'abort']) {
+  test(`串流 ${mode} 結束僅回報一次且不誤判完成`, async () => {
+    let upstreamResponse;
+    const timings = [];
+    let transferClosed;
+    const closed = new Promise((resolve) => { transferClosed = resolve; });
+    const upstream = http.createServer((req, res) => {
+      req.resume();
+      upstreamResponse = res;
+      res.writeHead(200);
+      if (mode === 'empty') res.end();
+      else { res.flushHeaders(); res.write('partial'); }
+    });
+    await listen(upstream);
+    const proxy = createProxy((options, callback) => http.request({
+      ...options, hostname: '127.0.0.1', port: upstream.address().port,
+    }, callback), {
+      onTransferComplete: (timing) => { timings.push(timing); transferClosed(); },
+    });
+    await listen(proxy);
+    let client;
+    try {
+      await new Promise((resolve, reject) => {
+        client = http.get(`http://127.0.0.1:${proxy.address().port}/stream`, (res) => {
+          res.on('data', () => { if (mode === 'abort') res.destroy(); });
+          res.on('close', resolve);
+        });
+        client.on('error', reject);
+      });
+      await closed;
+      assert.equal(timings.length, 1);
+      assert.equal(timings[0].completed, mode === 'empty');
+      if (mode === 'empty') assert.equal(timings[0].firstByteMs, null);
+      else assert.ok(Number.isFinite(timings[0].firstByteMs));
+    } finally {
+      client?.destroy();
+      upstreamResponse?.destroy();
+      await Promise.all([close(proxy), close(upstream)]);
+    }
+  });
+}
+
+test('標頭立即轉送，首塊及完成時間分開記錄，串流期間保留進行中', async () => {
+  let upstreamResponse;
+  const timings = [];
+  const firstBytes = [];
+  const frames = [];
+  const live = createLiveStatus({ write: (text) => frames.push(text), intervalMs: 0 });
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    upstreamResponse = res;
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.flushHeaders();
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback), {
+    onProxyStart: () => live.begin(),
+    onProxyResult: (...args) => live.record(...args),
+    onFirstByte: (ms) => { firstBytes.push(ms); live.firstByte(ms); },
+    onTransferComplete: (timing) => { timings.push(timing); live.complete(timing); },
+  });
+  await listen(proxy);
+  let client;
+  try {
+    const response = await new Promise((resolve, reject) => {
+      client = http.get(`http://127.0.0.1:${proxy.address().port}/stream`, resolve);
+      client.on('error', reject);
+      client.setTimeout(500, () => client.destroy(new Error('標頭未立即轉送')));
+    });
+    assert.deepEqual(firstBytes, []);
+    assert.deepEqual(timings, []);
+    assert.match(frames.at(-1), /進行中 1/);
+    const firstChunk = new Promise((resolve) => response.once('data', resolve));
+    upstreamResponse.write('data: first\n\n');
+    await firstChunk;
+    assert.equal(firstBytes.length, 1);
+    assert.equal(timings.length, 0);
+    const ended = new Promise((resolve) => response.once('end', resolve));
+    upstreamResponse.end('data: last\n\n');
+    await ended;
+    assert.equal(timings.length, 1);
+    assert.equal(timings[0].completed, true);
+    assert.equal(timings[0].firstByteMs, firstBytes[0]);
+    assert.ok(timings[0].totalMs >= firstBytes[0]);
+    assert.match(frames.at(-1), /進行中 0/);
+    assert.match(frames.at(-1), /首塊.*總計.*完成/);
+  } finally {
+    client?.destroy();
+    upstreamResponse?.destroy();
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
 
 test('本機串流經過代理的額外延遲維持在小範圍', async () => {
   const chunkCount = 40;

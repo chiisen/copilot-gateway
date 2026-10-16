@@ -73,6 +73,7 @@ function createProxy(request = https.request, options = {}) {
     let settled = false;
     let headersSeen = false;
     let timedOut = false;
+    let firstByteMs = null;
     const markConnected = () => {
       if (connectedAt === null) connectedAt = Date.now();
     };
@@ -110,6 +111,7 @@ function createProxy(request = https.request, options = {}) {
       settle();
       if (typeof proxyReq.setTimeout === 'function') proxyReq.setTimeout(0);
       res.writeHead(proxyRes.statusCode, { ...endToEndHeaders(proxyRes.headers), ...corsHeaders });
+      res.flushHeaders();
       if (typeof options.onProxyResult === 'function') {
         options.onProxyResult(proxyRes.statusCode, Date.now() - startedAt, phaseSnapshot());
       }
@@ -117,6 +119,10 @@ function createProxy(request = https.request, options = {}) {
         options.onProxyError(new Error(`上游回應 ${proxyRes.statusCode}`), 'status');
       }
       proxyRes.on('error', () => res.destroy());
+      proxyRes.once('data', () => {
+        firstByteMs = Date.now() - startedAt;
+        if (typeof options.onFirstByte === 'function') options.onFirstByte(firstByteMs);
+      });
       proxyRes.pipe(res);
     });
 
@@ -162,6 +168,13 @@ function createProxy(request = https.request, options = {}) {
     });
     res.on('close', () => {
       if (!res.writableFinished) proxyReq.destroy();
+      if (headersSeen && typeof options.onTransferComplete === 'function') {
+        options.onTransferComplete({
+          firstByteMs,
+          totalMs: Date.now() - startedAt,
+          completed: res.writableFinished,
+        });
+      }
     });
     req.pipe(proxyReq);
   });
@@ -177,7 +190,7 @@ if (require.main === module) {
     ]));
     process.exitCode = 1;
   } else {
-    const live = process.stdout.isTTY
+    const live = process.stdout.isTTY && process.env.COPILOT_GATEWAY_LIVE_STATUS !== '0'
       ? createLiveStatus({ color: !process.env.NO_COLOR })
       : null;
     const server = createProxy(https.request, {
@@ -186,6 +199,12 @@ if (require.main === module) {
       },
       onProxyResult(statusCode, durationMs, phases) {
         if (live) live.record(statusCode, durationMs, phases);
+      },
+      onFirstByte(durationMs) {
+        if (live) live.firstByte(durationMs);
+      },
+      onTransferComplete(timing) {
+        if (live) live.complete(timing);
       },
       onHeaderTimeout(err, phases) {
         if (live) live.timeout(err, phases);
