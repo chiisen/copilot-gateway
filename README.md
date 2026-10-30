@@ -1,6 +1,13 @@
 # copilot-gateway
 一個輕量級的 Node.js 本地代理工具，專門用來解決 VS Code Copilot Chat 連接 OpenCode Go 時缺少 x-opencode-session 請求標頭導致的 400 錯誤。
 
+> [!WARNING]
+> **VS Code Insiders 目前關閉了非 Copilot 模型的自訂設定**（2026-10-30 記錄）。
+> Insiders 已無法設定其他大模型，本專案的存在前提因此受到影響，**未來可能停止維護或關閉**。
+>
+> 目前 VS Code（Stable / `code`）仍可正常設定與使用，程式碼與既有設定皆可運作，因此**尚未關閉**，將持續觀察官方後續版本與政策。
+> 若你的版本已無法指定自訂模型，本工具即失去用途。
+
 ## 使用方式
 
 需要安裝 Node.js 18 或更新版本。在本資料夾執行（不需安裝 npm 套件）：
