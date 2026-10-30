@@ -4,7 +4,7 @@ const http = require('node:http');
 const https = require('node:https');
 const { randomUUID } = require('node:crypto');
 const { lookupPortListener } = require('./port-lookup');
-const { createLiveStatus, failureScreen, startScreen } = require('./screen');
+const { CLIENT_SESSION_NOTICE, createLiveStatus, failureScreen, startScreen } = require('./screen');
 
 const DEFAULT_PORT = 43187;
 const DEFAULT_HEADER_TIMEOUT_MS = 60_000;
@@ -50,6 +50,7 @@ function portInUseMessage(port, execFile, platform) {
 
 function createProxy(request = https.request, options = {}) {
   const headerTimeoutMs = options.headerTimeoutMs ?? DEFAULT_HEADER_TIMEOUT_MS;
+  let clientSessionNotified = false;
   return http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/healthz') {
       res.writeHead(200, { ...corsHeaders, 'Content-Type': 'application/json' });
@@ -65,6 +66,12 @@ function createProxy(request = https.request, options = {}) {
       });
       res.end();
       return;
+    }
+
+    const clientSession = req.headers['x-opencode-session'];
+    if (!clientSessionNotified && typeof clientSession === 'string' && clientSession.trim()) {
+      clientSessionNotified = true;
+      if (typeof options.onClientSessionDetected === 'function') options.onClientSessionDetected();
     }
 
     const startedAt = Date.now();
@@ -194,6 +201,10 @@ if (require.main === module) {
       ? createLiveStatus({ color: !process.env.NO_COLOR })
       : null;
     const server = createProxy(https.request, {
+      onClientSessionDetected() {
+        if (live) live.clientSession();
+        else console.log(CLIENT_SESSION_NOTICE);
+      },
       onProxyStart() {
         if (live) live.begin();
       },

@@ -31,6 +31,7 @@ function failureScreen(rows) {
 
 const SLOW_HEADER_MS = 2000;
 const RECENT_WINDOW = 20;
+const CLIENT_SESSION_NOTICE = '客戶端已提供 x-opencode-session；可測試直連 OpenCode，成功後停用 proxy。';
 
 function formatDuration(durationMs) {
   if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
@@ -71,6 +72,7 @@ function createLiveStatus({
   let lastStatus = null;
   let lastPhases = null;
   let lastTransfer = null;
+  let clientSessionSeen = false;
   const outcomes = [];
   const phaseSamples = { connectMs: [], uploadMs: [], upstreamMs: [] };
 
@@ -114,7 +116,10 @@ function createLiveStatus({
     const detail = (fault
       ? `${paint('31', '!')} ${paint('31', '最近異常')}  ${fault.message}  ${paint('2', fault.time)}`
       : `${paint('32', '最近異常')}  ${paint('32', '無')}`) + transfer;
-    write(`\x1b[3A\x1b[2K${running}\n\x1b[2K${recent}\n\x1b[2K${detail}\n`);
+    const session = clientSessionSeen
+      ? paint('36', CLIENT_SESSION_NOTICE)
+      : paint('2', 'Session：尚未偵測到客戶端自帶 x-opencode-session');
+    write(`\x1b[4A\x1b[2K${running}\n\x1b[2K${recent}\n\x1b[2K${detail}\n\x1b[2K${session}\n`);
   }
 
   function noteFault(err) {
@@ -131,7 +136,7 @@ function createLiveStatus({
 
   return {
     start() {
-      write('\n\n\n');
+      write('\n\n\n\n');
       render();
       if (intervalMs > 0) {
         timer = setInterval(render, intervalMs);
@@ -140,6 +145,10 @@ function createLiveStatus({
     },
     begin() {
       inflight += 1;
+      refresh();
+    },
+    clientSession() {
+      clientSessionSeen = true;
       refresh();
     },
     record(statusCode, durationMs, phases) {
@@ -187,4 +196,4 @@ function createLiveStatus({
   };
 }
 
-module.exports = { createLiveStatus, failureScreen, startScreen };
+module.exports = { CLIENT_SESSION_NOTICE, createLiveStatus, failureScreen, startScreen };

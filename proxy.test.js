@@ -83,6 +83,55 @@ test('補入穩定 Session、保留既有標頭並轉發串流', async () => {
   }
 });
 
+test('只對補入前已有非空 Session 的轉送請求提示一次', async () => {
+  const received = [];
+  let detected = 0;
+  const frames = [];
+  const live = createLiveStatus({ write: (text) => frames.push(text), intervalMs: 0 });
+  const upstream = http.createServer((req, res) => {
+    received.push(req.headers['x-opencode-session']);
+    req.resume();
+    res.end('ok');
+  });
+  await listen(upstream);
+  const proxy = createProxy((options, callback) => http.request({
+    ...options, hostname: '127.0.0.1', port: upstream.address().port,
+  }, callback), {
+    onClientSessionDetected() { detected += 1; live.clientSession(); },
+  });
+  await listen(proxy);
+  const url = `http://127.0.0.1:${proxy.address().port}`;
+  try {
+    for (const path of ['/healthz', '/test']) {
+      const response = await fetch(url + path, {
+        method: path === '/healthz' ? 'GET' : 'OPTIONS',
+        headers: { 'x-opencode-session': 'ignored-health-and-preflight' },
+      });
+      await response.text();
+    }
+    for (const headers of [{}, {}, { 'x-opencode-session': '' }]) {
+      await (await fetch(url + '/test', { headers })).text();
+    }
+    assert.equal(detected, 0);
+    assert.equal(frames.length, 0);
+    assert.match(received[0], /^vscode-copilot-/);
+    assert.equal(received[1], received[0]);
+    assert.equal(received[2], received[0]);
+    for (const session of ['client-session-private', 'another-session-private']) {
+      await (await fetch(url + '/test', { headers: { 'x-opencode-session': session } })).text();
+    }
+    assert.equal(detected, 1);
+    assert.deepEqual(received.slice(3), ['client-session-private', 'another-session-private']);
+    assert.match(frames.at(-1), /客戶端已提供 x-opencode-session.*可測試直連/);
+    live.record(200);
+    assert.match(frames.at(-1), /客戶端已提供 x-opencode-session/);
+    assert.doesNotMatch(frames.join(''), /client-session-private|another-session-private/);
+  } finally {
+    live.stop();
+    await Promise.all([close(proxy), close(upstream)]);
+  }
+});
+
 test('健康檢查與 CORS 預檢不會轉送至上游', async () => {
   let forwarded = false;
   const proxy = createProxy(() => {

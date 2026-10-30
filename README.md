@@ -14,6 +14,17 @@ node proxy.js
 
 若客戶端未提供 `x-opencode-session`，代理使用本次啟動產生的固定 UUID；重啟後會更新。
 這是暫時 workaround：不同對話共用備援 ID，並非官方要求的每段對話獨立 ID。客戶端已有該標頭時會保留。
+
+代理會在補入標頭前檢查原始請求。首次偵測到客戶端已帶有非空的 `x-opencode-session` 時，terminal 會顯示：
+
+```text
+客戶端已提供 x-opencode-session；可測試直連 OpenCode，成功後停用 proxy。
+```
+
+動態狀態列會持續保留這項提示；停用動態狀態列或導向檔案時只輸出一次，每次重啟重新檢查。提示不顯示標頭值，健康檢查與 CORS 預檢不觸發提示。proxy 自己補入的標頭不會觸發提示。
+
+看到提示後，可將模型的 API Base 從本機代理改為 `https://opencode.ai/zen/go/v1`，驗證常用模型的新對話、多輪對話與串流均正常後，再停止 proxy。此提示只證明傳入請求已有標頭，不代表已驗證 VS Code 全部請求或每段對話的 Session 穩定性；官方進度可追蹤 [VS Code Issue #334186](https://github.com/microsoft/vscode/issues/334186)。
+
 服務僅監聽 `127.0.0.1:43187`；在執行終端按 `Ctrl+C` 可停止。
 可用 `COPILOT_GATEWAY_PORT` 環境變數更換連接埠。查詢逾時或失敗時仍會提示改埠或停止占用程序。PowerShell 範例：
 
